@@ -59,16 +59,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE plugins/pneumaseal)
 
 Or in your `Makefile` / IDE project, add `pneumaseal.c` to the source list.
 
-### 4. Register in `plugins_init.h`
-
-```c
-#if PNEUMASEAL_ENABLE
-extern void pneumaseal_init(void);
-pneumaseal_init();
-#endif
-```
-
-### 5. Wire the solenoid
+### 4. Wire the solenoid
 
 Connect the solenoid driver circuit to any free auxiliary digital output on your board. Set `$<N+0>` to that port number. The output is **active high** — the pin goes high when the solenoid is open.
 
