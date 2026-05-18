@@ -165,9 +165,11 @@ static void on_spindle_programmed (spindle_ptrs_t *spindle, spindle_state_t stat
 static void on_driver_reset (void)
 {
     prev_driver_reset();     // always call original — never skip this
-    cancel_off_timer();
-    solenoid_set(false);
     spindle_rpm = 0.0f;
+    // Don't cut the solenoid immediately — apply the idle timeout so ESTOP/ALARM
+    // behaviour matches the design requirement (same as CAT_IDLE in apply_state).
+    if (solenoid_on)
+        schedule_off(cfg.idle_timeout);
 }
 
 static void on_report_options (bool newopt)
@@ -176,7 +178,7 @@ static void on_report_options (bool newopt)
         prev_on_report_options(newopt);
 
     if (!newopt)
-        report_plugin("PneumaSeal", "0.1");
+        report_plugin("PneumaSeal", "0.8");
 }
 
 // ── settings ──────────────────────────────────────────────────────────────────
@@ -286,7 +288,7 @@ static void ps_settings_restore (void)
     cfg.pause_timeout = PS_DEFAULT_PAUSE_TIMEOUT;
     cfg.active_states = PS_DEFAULT_ACTIVE_STATES;
     cfg.pause_states  = PS_DEFAULT_PAUSE_STATES;
-    hal.nvs.memcpy_to_nvs(nvs_addr, (uint8_t *)&cfg, sizeof(ps_nvs_t), true);
+    ps_settings_save();
 }
 
 static void ps_setup (void)
