@@ -12,8 +12,6 @@
 
 #if PNEUMASEAL_ENABLE
 
-#include <math.h>
-
 #include "grbl/hal.h"
 #include "grbl/ioports.h"
 #include "grbl/nvs_buffer.h"
@@ -57,13 +55,14 @@ static io_port_cfg_t d_out;
 
 // ── runtime state ─────────────────────────────────────────────────────────────
 
-static bool  solenoid_on = false;
-static float spindle_rpm = 0.0f;
+static bool    solenoid_on  = false;
+static uint8_t active_port  = IOPORT_UNASSIGNED;  // post-claim remapped index; cfg.port is the NVS value
 
 // ── chained callbacks ─────────────────────────────────────────────────────────
 
 static on_state_change_ptr        prev_on_state_change        = NULL;
 static on_spindle_programmed_ptr  prev_on_spindle_programmed  = NULL;
+static on_program_completed_ptr   prev_on_program_completed   = NULL;
 static on_report_options_ptr      prev_on_report_options      = NULL;
 static driver_reset_ptr           prev_driver_reset           = NULL;
 
@@ -71,10 +70,10 @@ static driver_reset_ptr           prev_driver_reset           = NULL;
 
 static void solenoid_set (bool on)
 {
-    if (cfg.port == IOPORT_UNASSIGNED)
+    if (active_port == IOPORT_UNASSIGNED)
         return;
     solenoid_on = on;
-    ioport_digital_out(cfg.port, (uint32_t)on);
+    ioport_digital_out(active_port, (uint32_t)on);
 }
 
 // ── timer ─────────────────────────────────────────────────────────────────────
@@ -116,7 +115,10 @@ static void apply_state (sys_state_t state)
     cancel_off_timer();
     ps_cat_t cat = classify(state);
 
-    if (cat == CAT_ACTIVE || spindle_rpm > 0.0f) {
+    spindle_ptrs_t *sp = spindle_get(0);
+    bool spindle_running = sp != NULL && sp->get_state != NULL && sp->get_state(sp).on;
+
+    if (cat == CAT_ACTIVE || spindle_running) {
         // Active motion or spindle running — ON indefinitely, no timer.
         solenoid_set(true);
     } else if (cat == CAT_PAUSE) {
@@ -146,26 +148,38 @@ static void on_spindle_programmed (spindle_ptrs_t *spindle, spindle_state_t stat
     if (prev_on_spindle_programmed)
         prev_on_spindle_programmed(spindle, state, rpm, mode);
 
-    spindle_rpm = rpm;
-
-    if (rpm > 0.0f) {
-        // Spindle starting — cancel any pending off timer, keep solenoid on.
+    if (state.on) {
+        // Spindle turning on — cancel any pending off timer, keep solenoid on.
+        // Note: rpm may be non-zero even for M5 (grblHAL passes last S-value), so
+        // state.on is the only reliable indicator of commanded spindle direction.
         cancel_off_timer();
         solenoid_set(true);
     } else {
-        // Spindle stopping — re-evaluate based on current motion state.
+        // Spindle programmed off (M5).  This callback fires inside spindle_set_state_synced
+        // BEFORE the hardware set_state call, so get_state() still reads on.
+        // Use the programmed state here; apply_state uses live query for all other paths.
         ps_cat_t cat = classify(state_get());
         if (cat != CAT_ACTIVE) {
             uint32_t delay = (cat == CAT_PAUSE) ? cfg.pause_timeout : cfg.idle_timeout;
             schedule_off(delay);
         }
+        // CAT_ACTIVE: still in motion; on_state_change re-evaluates when it ends.
     }
+}
+
+static void on_program_completed (program_flow_t program_flow, bool check_mode)
+{
+    if (prev_on_program_completed)
+        prev_on_program_completed(program_flow, check_mode);
+
+    // spindle_all_off() was called before this fires. Re-evaluate with live spindle
+    // state — needed when machine stays in STATE_IDLE throughout (no on_state_change).
+    apply_state(state_get());
 }
 
 static void on_driver_reset (void)
 {
     prev_driver_reset();     // always call original — never skip this
-    spindle_rpm = 0.0f;
     // Don't cut the solenoid immediately — apply the idle timeout so ESTOP/ALARM
     // behaviour matches the design requirement (same as CAT_IDLE in apply_state).
     if (solenoid_on)
@@ -178,7 +192,7 @@ static void on_report_options (bool newopt)
         prev_on_report_options(newopt);
 
     if (!newopt)
-        report_plugin("PneumaSeal", "0.8");
+        report_plugin("PneumaSeal", "1.3");
 }
 
 // ── settings ──────────────────────────────────────────────────────────────────
@@ -299,6 +313,9 @@ static void ps_setup (void)
     prev_on_spindle_programmed = grbl.on_spindle_programmed;
     grbl.on_spindle_programmed = on_spindle_programmed;
 
+    prev_on_program_completed = grbl.on_program_completed;
+    grbl.on_program_completed = on_program_completed;
+
     prev_driver_reset = hal.driver_reset;
     hal.driver_reset = on_driver_reset;
 }
@@ -308,10 +325,11 @@ static void ps_settings_load (void)
     if (hal.nvs.memcpy_from_nvs((uint8_t *)&cfg, nvs_addr, sizeof(ps_nvs_t), true) != NVS_TransferResult_OK)
         ps_settings_restore();
 
-    if (cfg.port != IOPORT_UNASSIGNED && d_out.claim(&d_out, &cfg.port, "Air Seal Solenoid", (pin_cap_t){}))
+    active_port = cfg.port;
+    if (active_port != IOPORT_UNASSIGNED && d_out.claim(&d_out, &active_port, "Air Seal Solenoid", (pin_cap_t){}))
         ps_setup();
     else {
-        cfg.port = IOPORT_UNASSIGNED;
+        active_port = IOPORT_UNASSIGNED;
         task_run_on_startup(report_warning, "PneumaSeal: configured port not available");
     }
 }
