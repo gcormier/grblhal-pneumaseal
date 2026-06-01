@@ -56,6 +56,7 @@ static io_port_cfg_t d_out;
 // ── runtime state ─────────────────────────────────────────────────────────────
 
 static bool    solenoid_on  = false;
+static bool    ps_active    = false;               // true once port claimed + callbacks hooked
 static uint8_t active_port  = IOPORT_UNASSIGNED;  // post-claim remapped index; cfg.port is the NVS value
 
 // ── chained callbacks ─────────────────────────────────────────────────────────
@@ -126,10 +127,12 @@ static void apply_state (sys_state_t state)
         solenoid_set(true);
         schedule_off(cfg.pause_timeout);
     } else {
-        // Fully stopped (IDLE, SLEEP, ALARM, ESTOP) — ON for idle timeout.
-        // Solenoid is NOT cut immediately after an alarm or e-stop.
-        solenoid_set(true);
-        schedule_off(cfg.idle_timeout);
+        // Fully stopped (IDLE, SLEEP, ALARM, ESTOP).
+        // Only restart the countdown if the solenoid is already on.  If it has already
+        // timed out (machine was idle before this event), leave it off — the user is
+        // walking away and the seal has already depressurized cleanly.
+        if (solenoid_on)
+            schedule_off(cfg.idle_timeout);
     }
 }
 
@@ -179,9 +182,8 @@ static void on_program_completed (program_flow_t program_flow, bool check_mode)
 
 static void on_driver_reset (void)
 {
-    prev_driver_reset();     // always call original — never skip this
-    // Don't cut the solenoid immediately — apply the idle timeout so ESTOP/ALARM
-    // behaviour matches the design requirement (same as CAT_IDLE in apply_state).
+    if (prev_driver_reset)
+        prev_driver_reset();
     if (solenoid_on)
         schedule_off(cfg.idle_timeout);
 }
@@ -192,7 +194,7 @@ static void on_report_options (bool newopt)
         prev_on_report_options(newopt);
 
     if (!newopt)
-        report_plugin("PneumaSeal", "1.3");
+        report_plugin("PneumaSeal", "1.5");
 }
 
 // ── settings ──────────────────────────────────────────────────────────────────
@@ -325,10 +327,16 @@ static void ps_settings_load (void)
     if (hal.nvs.memcpy_from_nvs((uint8_t *)&cfg, nvs_addr, sizeof(ps_nvs_t), true) != NVS_TransferResult_OK)
         ps_settings_restore();
 
+    // NVS reload (e.g. after $RST=*) refreshes timeouts/masks but must not re-claim the
+    // already-claimed port — the second claim() call would fail and disable the solenoid.
+    if (ps_active)
+        return;
+
     active_port = cfg.port;
-    if (active_port != IOPORT_UNASSIGNED && d_out.claim(&d_out, &active_port, "Air Seal Solenoid", (pin_cap_t){}))
+    if (active_port != IOPORT_UNASSIGNED && d_out.claim(&d_out, &active_port, "Air Seal Solenoid", (pin_cap_t){})) {
         ps_setup();
-    else {
+        ps_active = true;
+    } else {
         active_port = IOPORT_UNASSIGNED;
         task_run_on_startup(report_warning, "PneumaSeal: configured port not available");
     }
