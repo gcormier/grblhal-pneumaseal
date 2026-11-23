@@ -127,7 +127,9 @@ static void apply_state (sys_state_t state)
         solenoid_set(true);
     } else if (cat == CAT_PAUSE) {
         // Paused but likely resuming — ON for the longer pause timeout.
-        solenoid_set(true);
+        // A zero timeout means off immediately: don't pulse the output on first.
+        if (cfg.pause_timeout)
+            solenoid_set(true);
         schedule_off(cfg.pause_timeout);
     } else {
         // Fully stopped (IDLE, SLEEP, ALARM, ESTOP).
