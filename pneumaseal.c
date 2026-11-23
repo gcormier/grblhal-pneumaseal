@@ -58,6 +58,10 @@ static io_port_cfg_t d_out;
 static bool    solenoid_on  = false;
 static bool    ps_active    = false;               // true once port claimed + callbacks hooked
 static uint8_t active_port  = IOPORT_UNASSIGNED;  // post-claim remapped index; cfg.port is the NVS value
+// Invariant: active_port is valid whenever ps_active is true.  It is assigned by a
+// successful claim() before ps_setup() installs the callbacks that drive the
+// solenoid, and the ps_active early return in ps_settings_load() keeps it fixed
+// until reboot — a changed cfg.port (reboot required) never touches it.
 
 // ── chained callbacks ─────────────────────────────────────────────────────────
 
@@ -69,10 +73,9 @@ static driver_reset_ptr           prev_driver_reset           = NULL;
 
 // ── solenoid output ───────────────────────────────────────────────────────────
 
+// Only reachable from callbacks installed by ps_setup(), i.e. with a claimed port.
 static void solenoid_set (bool on)
 {
-    if (active_port == IOPORT_UNASSIGNED)
-        return;
     solenoid_on = on;
     ioport_digital_out(active_port, (uint32_t)on);
 }
@@ -124,7 +127,9 @@ static void apply_state (sys_state_t state)
         solenoid_set(true);
     } else if (cat == CAT_PAUSE) {
         // Paused but likely resuming — ON for the longer pause timeout.
-        solenoid_set(true);
+        // A zero timeout means off immediately: don't pulse the output on first.
+        if (cfg.pause_timeout)
+            solenoid_set(true);
         schedule_off(cfg.pause_timeout);
     } else {
         // Fully stopped (IDLE, SLEEP, ALARM, ESTOP).
@@ -194,7 +199,7 @@ static void on_report_options (bool newopt)
         prev_on_report_options(newopt);
 
     if (!newopt)
-        report_plugin("PneumaSeal", "1.5");
+        report_plugin("PneumaSeal", "1.6");
 }
 
 // ── settings ──────────────────────────────────────────────────────────────────

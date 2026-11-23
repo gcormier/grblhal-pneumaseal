@@ -31,6 +31,8 @@ The solenoid is never cut immediately — it always stays on through the relevan
 
 Setting numbers (`N`) are assigned at registration time and depend on what other plugins are loaded. Check `$$` output after enabling the plugin.
 
+Changing the port (`$<N+0>`) requires a reboot. The port is claimed once at startup; a new value (including `-1` to disable) is saved but stays pending, and the previously claimed port keeps driving the solenoid until the controller restarts. A settings reload such as `$RST=*` also leaves the claimed port in place. Timeout and bitmask changes apply without a reboot, from the next state or spindle change.
+
 ---
 
 ## Integration
