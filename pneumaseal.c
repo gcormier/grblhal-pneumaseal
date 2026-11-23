@@ -199,7 +199,7 @@ static void on_report_options (bool newopt)
         prev_on_report_options(newopt);
 
     if (!newopt)
-        report_plugin("PneumaSeal", "1.5");
+        report_plugin("PneumaSeal", "1.6");
 }
 
 // ── settings ──────────────────────────────────────────────────────────────────
